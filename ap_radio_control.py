@@ -75,6 +75,12 @@ RADIO_PARAMS_MAP = {
     "5g": "apRadioParams50G",
     "6g": "apRadioParams6G",
 }
+# Maps radio band to the key in the wifiAvailableChannels response
+RADIO_AVAILABLE_CHANNELS_KEY = {
+    "24g": "2.4GChannels",
+    "5g": "5GChannels",
+    "6g": "6GChannels",
+}
 
 # Shared session with a real User-Agent to avoid Cloudflare bot challenges
 session = requests.Session()
@@ -129,6 +135,22 @@ def authenticate() -> str:
 # ---------------------------------------------------------------------------
 
 
+def get_available_channels(token: str, venue_id: str, serial_number: str) -> dict:
+    """GET the regulatory-compliant available channels for an AP."""
+    url = f"{API_BASE_URL}/venues/{venue_id}/aps/{serial_number}/wifiAvailableChannels"
+    logger.info("GET available channels for AP %s", serial_number)
+
+    resp = session.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    logger.debug("Available channels for AP %s: %s", serial_number, json.dumps(data, indent=2))
+    return data
+
+
 def get_radio_settings(token: str, venue_id: str, serial_number: str) -> dict:
     """GET the current radio settings for an AP."""
     url = f"{API_BASE_URL}/venues/{venue_id}/aps/{serial_number}/radioSettings"
@@ -178,7 +200,7 @@ def poll_activity(token: str, request_id: str, max_wait: int = 60, interval: int
         if status == "SUCCESS":
             logger.info("Activity %s completed successfully", request_id)
             return True
-        if status in ("FAILED", "ERROR"):
+        if status in ("FAIL", "FAILED", "ERROR"):
             logger.error("Activity %s failed: %s", request_id, json.dumps(data, indent=2))
             return False
 
@@ -204,10 +226,9 @@ def update_radio_settings(token: str, venue_id: str, serial_number: str, setting
         json=settings,
         timeout=30,
     )
-    resp.raise_for_status()
-
     logger.debug("PUT response status: %d", resp.status_code)
     logger.debug("PUT response body: %s", resp.text)
+    resp.raise_for_status()
 
     result = resp.json()
 
@@ -234,6 +255,11 @@ def set_radio_state(
 
     settings = get_radio_settings(token, venue_id, serial_number)
 
+    # Fetch regulatory-compliant channels when enabling (API requires allowedChannels)
+    available_channels = None
+    if enable:
+        available_channels = get_available_channels(token, venue_id, serial_number)
+
     for radio in radios:
         flag_key = RADIO_FLAG_MAP[radio]
         settings[flag_key] = enable
@@ -244,6 +270,24 @@ def set_radio_state(
         if params_key in settings:
             settings[params_key]["useVenueSettings"] = False
             logger.debug("  %s.useVenueSettings = False", params_key)
+
+            # API requires allowedChannels when enabling a radio
+            if enable and "allowedChannels" not in settings[params_key]:
+                channels_key = RADIO_AVAILABLE_CHANNELS_KEY[radio]
+                band_channels = available_channels.get(channels_key, {})
+                # 2.4G and 6G have top-level "auto"; 5G nests under indoor/outdoor
+                if "auto" in band_channels:
+                    allowed = band_channels["auto"]
+                else:
+                    allowed = band_channels.get("indoor", {}).get("auto", [])
+                settings[params_key]["allowedChannels"] = allowed
+                logger.debug("  %s.allowedChannels = %s", params_key, allowed)
+
+            # 5G also requires allowedOutdoorChannels
+            if enable and radio == "5g" and "allowedOutdoorChannels" not in settings[params_key]:
+                outdoor = available_channels.get("5GChannels", {}).get("outdoor", {}).get("auto", [])
+                settings[params_key]["allowedOutdoorChannels"] = outdoor
+                logger.debug("  %s.allowedOutdoorChannels = %s", params_key, outdoor)
 
     update_radio_settings(token, venue_id, serial_number, settings)
 

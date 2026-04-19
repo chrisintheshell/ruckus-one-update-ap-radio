@@ -11,10 +11,11 @@
 - Config loaded from `.env` via `python-dotenv`. Secrets must never be logged or committed.
 - Async API responses (HTTP 202 + `requestId`) are polled best-effort; updates succeed without polling.
 - Key constraint: `useVenueSettings` must be set to `false` on radio params for AP-level overrides to apply.
+- Key constraint: `allowedChannels` (string array) must be included when enabling a radio; fetched dynamically from `GET /venues/{venueId}/aps/{serialNumber}/wifiAvailableChannels`.
 - Logs written to `logs/ap_radio_control.log` (rotating, 5MB, 5 backups).
 
 ## API Documentation
-- Update AP Radio Settings: https://docs.ruckus.cloud/api/wifi-17.3.3.307/ap/updateapradio
+- Update AP Radio Settings: https://docs.ruckus.cloud/api/wifi-17.3.3.312/ap/updateapradio
 
 ## Code Style
 - Python 3.10+ (type hints use `X | None` syntax, `set[str]`). Stdlib imports first, then third-party.
